@@ -3,8 +3,6 @@ from matplotlib.pyplot import close
 from pydantic import BaseModel, Field
 from ROAR.control_module.controller import Controller
 from ROAR.utilities_module.vehicle_models import VehicleControl, Vehicle
-# import keyboard
-
 from ROAR.utilities_module.data_structures_models import Transform, Location, Rotation
 from collections import deque
 import numpy as np
@@ -16,6 +14,7 @@ import json
 from pathlib import Path
 from ROAR.planning_module.mission_planner.waypoint_following_mission_planner import WaypointFollowingMissionPlanner
 
+
 class PIDFastController(Controller):
     def __init__(self, agent, steering_boundary: Tuple[float, float],
                  throttle_boundary: Tuple[float, float], **kwargs):
@@ -24,8 +23,7 @@ class PIDFastController(Controller):
         throttle_boundary = throttle_boundary
         self.steering_boundary = steering_boundary
         self.config = json.load(Path(agent.agent_settings.pid_config_file_path).open(mode='r'))
-        
-        # useful variables
+
         self.region = 1
         self.brake_counter = 0
 
@@ -51,20 +49,14 @@ class PIDFastController(Controller):
         self.logger = logging.getLogger(__name__)
 
     def run_in_series(self, next_waypoint: Transform, close_waypoint: Transform, far_waypoint: Transform, **kwargs) -> VehicleControl:
-
-        # run lat pid controller
         steering, error, wide_error, sharp_error = self.lat_pid_controller.run_in_series(next_waypoint=next_waypoint, close_waypoint=close_waypoint, far_waypoint=far_waypoint)
-        
-        
+
         current_speed = Vehicle.get_speed(self.agent.vehicle)
-        
-        # get errors from lat pid
+
         error = abs(round(error, 3))
         wide_error = abs(round(wide_error, 3))
         sharp_error = abs(round(sharp_error, 3))
-        #print(error, wide_error, sharp_error)
 
-        # calculate change in pitch
         pitch = float(next_waypoint.record().split(",")[4])
 
         if self.region == 1:
@@ -75,11 +67,10 @@ class PIDFastController(Controller):
                 throttle = -1
                 brake = 1
         elif self.region == 2:
-            waypoint = self.waypoint_queue_braking[0] # 5012 is weird bump spot
+            waypoint = self.waypoint_queue_braking[0]
             dist = self.agent.vehicle.transform.location.distance(waypoint.location)
             if dist <= 5:
                 self.brake_counter = 1
-                # print(self.waypoint_queue_braking[0])
                 self.waypoint_queue_braking.pop(0)
             if self.brake_counter > 0:
                 throttle = -1
@@ -90,26 +81,23 @@ class PIDFastController(Controller):
             elif sharp_error >= 0.67 and current_speed > 70:
                 throttle = 0
                 brake = 0.4
-            elif wide_error > 0.09 and current_speed > 92: # wide turn
-                throttle = max(0, 1 - 6*pow(wide_error + current_speed*0.003, 6))
+            elif wide_error > 0.09 and current_speed > 92:
+                throttle = max(0, 1 - 6 * pow(wide_error + current_speed * 0.003, 6))
                 brake = 0
             else:
                 throttle = 1
                 brake = 0
-        
-        gear = max(1, (int)((current_speed - 2*pitch) / 60))
+
+        gear = max(1, (int)((current_speed - 2 * pitch) / 60))
         if throttle == -1:
             gear = -1
-        
+
         waypoint = self.waypoint_queue_region[0]
         dist = self.agent.vehicle.transform.location.distance(waypoint.location)
         if dist <= 10:
             self.region += 1
             self.waypoint_queue_region.pop(0)
-        
-        # if keyboard.is_pressed("space"):
-        #      print(self.agent.vehicle.transform.record())
-        
+
         return VehicleControl(throttle=throttle, steering=steering, brake=brake, gear=gear)
 
     @staticmethod
@@ -123,6 +111,7 @@ class PIDFastController(Controller):
                 break
         return np.array([k_p, k_d, k_i])
 
+
 class LatPIDController(Controller):
     def __init__(self, agent, config: dict, steering_boundary: Tuple[float, float],
                  dt: float = 0.03, **kwargs):
@@ -133,16 +122,6 @@ class LatPIDController(Controller):
         self._dt = dt
 
     def run_in_series(self, next_waypoint: Transform, close_waypoint: Transform, far_waypoint: Transform, **kwargs) -> float:
-        """
-        Calculates a vector that represent where you are going.
-        Args:
-            next_waypoint ():
-            **kwargs ():
-
-        Returns:
-            lat_control
-        """
-        # calculate a vector that represent where you are going
         v_begin = self.agent.vehicle.transform.location.to_array()
         direction_vector = np.array([-np.sin(np.deg2rad(self.agent.vehicle.transform.rotation.yaw)),
                                      0,
@@ -150,8 +129,6 @@ class LatPIDController(Controller):
         v_end = v_begin + direction_vector
 
         v_vec = np.array([(v_end[0] - v_begin[0]), 0, (v_end[2] - v_begin[2])])
-        
-        # calculate error projection
         w_vec = np.array(
             [
                 next_waypoint.location.x - v_begin[0],
@@ -162,11 +139,9 @@ class LatPIDController(Controller):
 
         v_vec_normed = v_vec / np.linalg.norm(v_vec)
         w_vec_normed = w_vec / np.linalg.norm(w_vec)
-        #error = np.arccos(v_vec_normed @ w_vec_normed.T)
-        error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1)) # makes sure arccos input is between -1 and 1, inclusive
+        error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1))
         _cross = np.cross(v_vec_normed, w_vec_normed)
 
-        # calculate close error projection
         w_vec = np.array(
             [
                 close_waypoint.location.x - v_begin[0],
@@ -175,10 +150,8 @@ class LatPIDController(Controller):
             ]
         )
         w_vec_normed = w_vec / np.linalg.norm(w_vec)
-        #wide_error = np.arccos(v_vec_normed @ w_vec_normed.T)
-        wide_error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1)) # makes sure arccos input is between -1 and 1, inclusive
+        wide_error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1))
 
-        # calculate far error projection
         w_vec = np.array(
             [
                 far_waypoint.location.x - v_begin[0],
@@ -187,8 +160,7 @@ class LatPIDController(Controller):
             ]
         )
         w_vec_normed = w_vec / np.linalg.norm(w_vec)
-        #sharp_error = np.arccos(v_vec_normed @ w_vec_normed.T)
-        sharp_error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1)) # makes sure arccos input is between -1 and 1, inclusive
+        sharp_error = np.arccos(min(max(v_vec_normed @ w_vec_normed.T, -1), 1))
 
         if _cross[1] > 0:
             error *= -1
@@ -205,4 +177,5 @@ class LatPIDController(Controller):
         lat_control = float(
             np.clip((k_p * error) + (k_d * _de) + (k_i * _ie), self.steering_boundary[0], self.steering_boundary[1])
         )
+
         return lat_control, error, wide_error, sharp_error
